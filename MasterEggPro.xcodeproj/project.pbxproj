@@ -517,6 +517,7 @@
 				CODE_SIGN_ENTITLEMENTS = "MasterEgg Pro/MasterEgg_Pro.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "MasterEggPro-Info.plist";
@@ -559,6 +560,7 @@
 				CODE_SIGN_ENTITLEMENTS = "MasterEgg Pro/MasterEgg_Pro.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "MasterEggPro-Info.plist";
@@ -684,6 +686,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NotificationServiceExtensionApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NotificationServiceExtensionApp;
@@ -714,6 +717,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NotificationServiceExtensionApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NotificationServiceExtensionApp;

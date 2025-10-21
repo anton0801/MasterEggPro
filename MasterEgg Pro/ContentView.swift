@@ -9,7 +9,6 @@ import FirebaseCore
 import UserNotifications
 import AppTrackingTransparency
 
-// MARK: - Color Extensions
 extension Color {
     static let eggYellow = Color(red: 1.0, green: 0.85, blue: 0.24)  // #FFD93D
     static let coralRed = Color(red: 1.0, green: 0.42, blue: 0.42)  // #FF6B6B
@@ -18,14 +17,13 @@ extension Color {
     static let creamWhite = Color(red: 1.0, green: 0.98, blue: 0.9)  // #FFF9E6
 }
 
-// MARK: - Data Models
 struct Breed: Identifiable, Codable {
     let id = UUID()
     let name: String
     let origin: String
     let description: String
     let productivity: String
-    var imageName: String { return name.lowercased().replacingOccurrences(of: " ", with: "_") }  // Placeholder
+    var imageName: String { return name.lowercased().replacingOccurrences(of: " ", with: "_") }
 }
 
 struct IncubationBatch: Identifiable, Codable {
@@ -298,7 +296,7 @@ struct EggMasterProApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            EggMasterProLauncherView()
                 .environment(\.font, Font.custom("Poppins-Regular", size: 16))
         }
     }
@@ -391,7 +389,6 @@ class ApplicationDelegate: UIResponder, UIApplicationDelegate, AppsFlyerLibDeleg
 }
 
 extension ApplicationDelegate {
-    
     
     private func processNotifPayload(_ payload: [AnyHashable: Any]) {
         var linkStr: String?
@@ -1554,10 +1551,10 @@ struct EggMasterProLauncherView: View {
                         MainEggInterface()
                             .preferredColorScheme(.dark)
                     } else {
-                        ContentView()
+                        ContentView().environment(\.font, Font.custom("Poppins-Regular", size: 16))
                     }
                 case .fallback:
-                    ContentView()
+                    ContentView().environment(\.font, Font.custom("Poppins-Regular", size: 16))
                 case .offline:
                     noSignalView
                 }
